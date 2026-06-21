@@ -47,16 +47,17 @@ class BaseScraper(ABC):
         self._browser = None
         self._context = None
         self._cookies_loaded = False
-        self.output_dir = OUTPUT_DIR / self.platform
 
     # ── Browser lifecycle ──────────────────────────────────
 
     async def _start_browser(self):
         """Initialize CloakBrowser with saved cookies."""
-        from cloakbrowser import cloakbrowser
+        import cloakbrowser
 
-        self._cloak = cloakbrowser()
-        self._browser = await self._cloak.start()
+        self._browser = await cloakbrowser.launch_async(
+            headless=self.headless,
+            humanize=self.humanize,
+        )
         self._context = await self._browser.new_context()
 
         # Load cookies if available
@@ -78,8 +79,6 @@ class BaseScraper(ABC):
         """Clean up browser resources."""
         if self._browser:
             await self._browser.close()
-        if self._cloak:
-            await self._cloak.__aexit__(None, None, None)
 
     async def __aenter__(self):
         await self._start_browser()

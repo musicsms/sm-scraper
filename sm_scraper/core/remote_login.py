@@ -41,7 +41,6 @@ class RemoteLogin:
         self.browser = None
         self.context = None
         self.page = None
-        self._cloak = None
         self.status = "idle"
         self.screenshot_path = None
         self.page_text = ""
@@ -50,12 +49,14 @@ class RemoteLogin:
 
     async def open_login_page(self):
         """Mở browser + login page, chụp screenshot đầu tiên."""
-        from cloakbrowser import cloakbrowser
+        import cloakbrowser
 
         self.status = "starting"
         
-        self._cloak = cloakbrowser()
-        self.browser = await self._cloak.start()
+        self.browser = await cloakbrowser.launch_async(
+            headless=True,
+            humanize=True,
+        )
         self.context = await self.browser.new_context()
         self.page = await self.context.new_page()
 
@@ -282,8 +283,6 @@ class RemoteLogin:
         """Dọn dẹp."""
         if self.browser:
             await self.browser.close()
-        if self._cloak:
-            await self._cloak.__aexit__(None, None, None)
         self.status = "closed"
 
 
