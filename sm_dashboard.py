@@ -52,7 +52,7 @@ if "scrape_results" not in st.session_state:
     st.session_state.scrape_results = None
 
 PLATFORMS = {
-    "facebook": {"icon": "📘", "color": "#1877F2", "actions": ["profile", "posts", "photos", "friends", "groups", "about", "all"]},
+    "facebook": {"icon": "📘", "color": "#1877F2", "actions": ["profile", "posts", "photos", "videos", "comments", "friends", "groups", "about", "page", "all"]},
     "instagram": {"icon": "📸", "color": "#E4405F", "actions": ["profile", "posts", "stories", "all"]},
     "threads": {"icon": "🧵", "color": "#000000", "actions": ["profile", "posts", "all"]},
     "tiktok": {"icon": "🎵", "color": "#FF004F", "actions": ["profile", "videos", "all"]},
@@ -67,7 +67,10 @@ ACTIONS_DISPLAY = {
     "profile": "👤 Profile", "posts": "📝 Posts", "photos": "🖼️ Photos",
     "videos": "🎬 Videos", "channel": "📺 Channel", "messages": "💬 Messages",
     "friends": "👥 Friends", "groups": "📋 Groups", "about": "ℹ️ About",
-    "stories": "📱 Stories", "comments": "💭 Comments", "all": "⚡ All Data",
+    "stories": "📱 Stories", "comments": "💭 Comments", "videos": "🎬 Videos",
+    "comments": "💬 Comments",
+    "page": "📄 Page",
+    "all": "⚡ All Data",
 }
 
 # ── Sidebar ──
@@ -147,7 +150,9 @@ if mode == "🔍 Scrape":
                             elif action == "friends": return await scraper.scrape_friends(username)
                             elif action == "groups": return await scraper.scrape_groups(username)
                             elif action == "about": return await scraper.scrape_about(username)
-                            elif action == "comments": return await scraper.scrape_comments(username)
+                            elif action == "comments": return await scraper.scrape_comments(username, limit)
+                            elif action == "videos": return await scraper.scrape_videos(username, limit)
+                            elif action == "page": return await scraper.scrape_page(username)
                             elif action == "profile": return await scraper.scrape_profile(username)
                             elif action == "posts": return await scraper.scrape_posts(username, limit)
                             elif action == "photos": return await scraper.scrape_photos(username, limit)

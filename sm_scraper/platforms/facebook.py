@@ -346,6 +346,147 @@ class FacebookScraper(BaseScraper):
         self._save_metadata(username, {"friends": friends}, "friends")
         return friends
 
+
+    # ═══════════════════════════════════════════════════════
+    # COMMENTS — scrape from a post URL
+    # ═══════════════════════════════════════════════════════
+
+    async def scrape_comments(self, post_url: str, limit: int = 30) -> list:
+        """Scrape comments from a specific Facebook post."""
+        page = await self._new_page()
+        await page.goto(post_url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(4000)
+
+        # Expand more comments if possible
+        for _ in range(min(limit // 5 + 1, 5)):
+            try:
+                btns = await page.query_selector_all(
+                    'a[href*="comment_id"], div[role="button"]'
+                )
+                for btn in btns:
+                    txt = await btn.inner_text()
+                    if "comment" in txt.lower() or "view" in txt.lower():
+                        await btn.click()
+                        await page.wait_for_timeout(2000)
+                        break
+            except:
+                break
+
+        comments = []
+        containers = await page.query_selector_all('div[role="article"], li[class*="comment"]')
+        for c in containers[:limit]:
+            try:
+                text = await c.inner_text()
+                author_el = await c.query_selector('a[href*="/user/"], a[href*="?id="], strong, h4')
+                author = await author_el.inner_text() if author_el else None
+                time_el = await c.query_selector('time, a[href*="/comment"]')
+                ts = await time_el.get_attribute("datetime") if time_el else None
+                comments.append({
+                    "author": author,
+                    "text": (text or "")[:2000],
+                    "timestamp": ts,
+                })
+            except:
+                continue
+
+        print(f"  → Comments: {len(comments)}")
+        post_id = post_url.rstrip("/").split("/")[-1][:20]
+        self._save_metadata(post_id, {"comments": comments}, "comments")
+        return comments
+
+    # ═══════════════════════════════════════════════════════
+    # VIDEOS — all videos from profile
+    # ═══════════════════════════════════════════════════════
+
+    async def scrape_videos(self, username: str, limit: int = 20) -> list:
+        """Scrape videos tab."""
+        page = await self._new_page()
+        url = f"{self.base_url}/{username}/videos"
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(4000)
+
+        for i in range(min(limit // 5 + 1, 4)):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(2000)
+
+        videos = await page.evaluate("""() => {
+            const items = [];
+            const links = document.querySelectorAll('a[href*="/videos/"]');
+            const seen = new Set();
+            links.forEach(a => {
+                const href = a.href.split("?")[0];
+                if (seen.has(href) || !href.includes("/videos/")) return;
+                seen.add(href);
+                const img = a.querySelector("img");
+                const dur = a.querySelector("span");
+                items.push({
+                    url: href,
+                    thumbnail: img ? img.src : null,
+                    duration: dur ? dur.innerText.trim() : null,
+                });
+            });
+            return items.slice(0, """ + str(limit) + """ );
+        }""")
+        print(f"  → Videos: {len(videos)}")
+        self._save_metadata(username, {"videos": videos}, "videos")
+        return videos
+
+    # ═══════════════════════════════════════════════════════
+    # PAGE — scrape Facebook Page (not profile)
+    # ═══════════════════════════════════════════════════════
+
+    async def scrape_page(self, page_name: str) -> dict:
+        """Scrape a Facebook Page (business, brand, public figure)."""
+        page = await self._new_page()
+        url = f"{self.base_url}/{page_name}"
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(4000)
+
+        import re
+        result = {
+            "url": page.url,
+            "page": page_name,
+            "scraped_at": self._ts(),
+            "name": None,
+            "category": None,
+            "followers": None,
+            "description": None,
+            "avatar_url": None,
+            "cover_url": None,
+            "website": None,
+            "phone": None,
+            "email": None,
+            "rating": None,
+        }
+
+        meta = await page.evaluate("""() => {
+            const m = {};
+            document.querySelectorAll("meta[property], meta[name]").forEach(el => {
+                m[el.getAttribute("property") || el.getAttribute("name")] = el.getAttribute("content");
+            });
+            return m;
+        }""")
+        result["meta"] = meta
+        result["avatar_url"] = meta.get("og:image")
+        result["description"] = meta.get("description") or meta.get("og:description")
+
+        text = await page.evaluate("document.body.innerText")
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+        for idx, line in enumerate(lines):
+            if "people follow this" in line.lower() or "followers" in line.lower():
+                nums = re.findall(r"[\d,.]+[KMBkmb]?", line)
+                if nums: result["followers"] = nums[0]
+            if "website" in line.lower() and "http" in line:
+                for w in line.split():
+                    if w.startswith("http"):
+                        result["website"] = w
+
+        result["meta"]["text_snippet"] = text[:5000]
+        self._save_metadata(page_name, result, "page")
+        return result
+
+
     # ═══════════════════════════════════════════════════════
     # ALL-IN-ONE
     # ═══════════════════════════════════════════════════════

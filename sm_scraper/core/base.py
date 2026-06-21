@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import random
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
 from .auth import load_cookies, COOKIE_DIR
+from .stealth import human_scroll, delay, long_delay, check_blocked, Backoff, RateLimiter
+from .stealth import human_scroll, delay, long_delay, check_blocked, Backoff, RateLimiter
 from .utils import (
     ensure_output_dir, save_json, save_media_urls,
     make_timestamp, timestamp_iso, summary_stats, OUTPUT_DIR
