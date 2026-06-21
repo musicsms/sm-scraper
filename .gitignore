@@ -1,0 +1,13 @@
+# sm-scraper
+
+__pycache__/
+*.pyc
+*.pyo
+.env
+.sm_scraper_cookies/
+*.sm_scraper_telegram.json
+sm_scraper_session.session
+sm_scraper_session.session-journal
+/sm_scraped_data/
+*.png
+/tmp/
