@@ -68,6 +68,7 @@ class ThreadsScraper(BaseScraper):
         }""")
         result["meta"] = meta
         result["avatar_url"] = meta.get("og:image")
+        result["full_name"] = meta.get("og:title", "").replace(" (@' + username + ') • Threads, Say more", "").replace(" (@' + username + ') • Threads", "").strip() or None
 
         # ── Avatar via image selector ──
         if not result["avatar_url"]:

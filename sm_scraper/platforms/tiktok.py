@@ -60,6 +60,24 @@ class TikTokScraper(BaseScraper):
         }""")
         result["meta"] = meta
         result["avatar_url"] = meta.get("og:image")
+        # Parse OG description for profile data
+        og_desc = meta.get("og:description", meta.get("description", ""))
+        if og_desc:
+            fm = re.search(r"([\d,.]+[KMBkmb]?)\s*Followers?", og_desc, re.I)
+            if fm and not result.get("followers_count"):
+                result["followers_count"] = fm.group(1)
+            lm = re.search(r"([\d,.]+[KMBkmb]?)\s*Likes?", og_desc, re.I)
+            if lm and not result.get("likes_count"):
+                result["likes_count"] = lm.group(1)
+            # Bio often in OG description too
+            bio_match = re.search(r"Watch.+?TikTok", og_desc, re.I)
+            if not bio_match:
+                # Take everything after the stats as bio
+                parts = re.split(r"\d+[KMBkmb]?\s*(?:Followers?|Likes?)", og_desc)
+                if len(parts) >= 2:
+                    bio_text = parts[-1].strip().rstrip(".")
+                    if bio_text and len(bio_text) > 5:
+                        result["bio"] = bio_text[:200]
 
         # ── Body text ──
         text = await page.evaluate("document.body.innerText")
