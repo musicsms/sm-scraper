@@ -1,18 +1,21 @@
 """
-Reddit scraper — extracts all available information:
-  • Profile (username, avatar, cake day, karma, bio)
-  • Posts (title, text, images, subreddit, upvotes, comments, awards)
-  • Comments (text, subreddit, upvotes, timestamps)
-  • Active subreddits
+Reddit scraper — dùng old.reddit.com (HTML thuần, 0 bot detection).
+  • Profile (username, avatar, cake day, post/comment karma, bio)
+  • Posts (title, text, subreddit, upvotes, comments, timestamp, url)
+  • Comments (text, subreddit, upvotes, timestamp)
 
 Usage:
-    python -m sm_scraper reddit profile <username>
-    python -m sm_scraper reddit posts <username> [--limit 20]
-    python -m sm_scraper reddit all <username>
+    sm-scraper reddit profile <username>
+    sm-scraper reddit posts <username> [--limit 20]
+    sm-scraper reddit comments <username> [--limit 30]
+    sm-scraper reddit all <username>
 """
 
+import asyncio
+import random
 import re
 from ..core.base import BaseScraper
+from ..core.stealth import human_scroll
 
 
 class RedditScraper(BaseScraper):
@@ -23,190 +26,137 @@ class RedditScraper(BaseScraper):
 
     @property
     def base_url(self) -> str:
-        return "https://www.reddit.com"
+        return "https://old.reddit.com"
+
+    # ── Parse helpers ──
+
+    def _parse_posts(self, html: str, limit: int) -> list:
+        posts = []
+        blocks = re.split(r'<div\s+id="thing_', html)
+        for block in blocks[1:]:
+            p = {}
+            m = re.search(r'<a\s+class="[^"]*may-blank[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+            if m:
+                href = m.group(1)
+                p['url'] = 'https://old.reddit.com' + href if href.startswith('/') else href
+                p['title'] = m.group(2).strip()
+            m = re.search(r'<a[^>]*href="/(r/[^"/]+)"', block)
+            if m: p['subreddit'] = m.group(1)
+            m = re.search(r'<div\s+class="score[^"]*"[^>]*>\s*([^<]+)\s*</div>', block)
+            if m: p['upvotes'] = m.group(1).strip()
+            m = re.search(r'<a[^>]*class="[^"]*comments[^"]*"[^>]*>\s*(\d+)\s*(?:comment|&nbsp;)</a>', block, re.I)
+            if m: p['comments'] = m.group(1)
+            m = re.search(r'<time[^>]*datetime="([^"]+)"', block)
+            if m: p['timestamp'] = m.group(1)
+            m = re.search(r'<a\s+class="[^"]*thumbnail[^"]*"[^>]*>\s*<img\s+src="([^"]+)"', block)
+            if m and 'self' not in m.group(1) and 'default' not in m.group(1):
+                p['thumbnail'] = m.group(1)
+            if p.get('title'):
+                posts.append(p)
+            if len(posts) >= limit:
+                break
+        return posts
+
+    def _parse_comments(self, html: str, limit: int) -> list:
+        comments = []
+        blocks = re.split(r'<div\s+class="[^"]*entry[^"]*"[^>]*>', html)
+        for block in blocks[1:]:
+            c = {}
+            m = re.search(r'<a[^>]*class="[^"]*author[^"]*"[^>]*>([^<]+)</a>', block)
+            if m: c['author'] = m.group(1).strip()
+            m = re.search(r'<span\s+class="[^"]*score[^"]*"[^>]*>\s*([^<]+)\s*</span>', block)
+            if m: c['upvotes'] = m.group(1).strip()
+            m = re.search(r'<time[^>]*datetime="([^"]+)"', block)
+            if m: c['timestamp'] = m.group(1)
+            m = re.search(r'<div\s+class="[^"]*md[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>', block, re.DOTALL)
+            if m:
+                body = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                c['text'] = body[:2000]
+            m = re.search(r'<a[^>]*href="/(r/[^"/]+)"', block)
+            if m: c['subreddit'] = m.group(1)
+            if c.get('text'):
+                comments.append(c)
+            if len(comments) >= limit:
+                break
+        return comments
 
     # ═══════════════════════════════════════════════════════
     # PROFILE
     # ═══════════════════════════════════════════════════════
 
     async def scrape_profile(self, username: str) -> dict:
-        """Extract all visible Reddit profile info — no login needed."""
+        """Extract profile via old.reddit — JS-free, 0 detection."""
         page = await self._new_page()
         url = f"{self.base_url}/user/{username}"
+
+        # Human delay before loading
+        await asyncio.sleep(random.uniform(2.0, 5.0))
         await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(3000)
 
         result = {
-            "url": url,
+            "url": page.url,
             "username": username,
             "scraped_at": self._ts(),
-            "display_name": None,
-            "avatar_url": None,
-            "banner_url": None,
-            "cake_day": None,
-            "post_karma": None,
-            "comment_karma": None,
-            "total_karma": None,
-            "bio": None,
-            "is_nsfw": False,
-            "is_mod": False,
+            "display_name": None, "avatar_url": None,
+            "cake_day": None, "post_karma": None, "comment_karma": None,
+            "total_karma": None, "bio": None, "is_mod": False,
             "active_subreddits": [],
         }
 
-        # ── Meta / OG ──
-        meta = await page.evaluate("""() => {
-            const m = {};
-            document.querySelectorAll('meta[property], meta[name]').forEach(el => {
-                m[el.getAttribute('property') || el.getAttribute('name')] = el.getAttribute('content');
-            });
-            return m;
-        }""")
-        result["meta"] = {"og": meta}
-        result["avatar_url"] = meta.get("og:image")
+        text = await page.evaluate('document.body.innerText')
+        html = await page.content()
 
-        # ── Body text ──
-        text = await page.evaluate("document.body.innerText")
-        result["meta"]["raw_text_snippet"] = text[:8000]
+        # Display name
+        m = re.search(r'<span\s+class="[^"]*user[^"]*"[^>]*>\s*([^<]+)', html)
+        if m: result['display_name'] = m.group(1).strip()
+
+        # Karma from sidebar
+        m = re.search(r'([\d,.]+)\s*post\s*karma', text, re.I)
+        if m: result['post_karma'] = m.group(1)
+        m = re.search(r'([\d,.]+)\s*comment\s*karma', text, re.I)
+        if m: result['comment_karma'] = m.group(1)
+        m = re.search(r'^([\d,.]+)\s+karma', text, re.M)
+        if m: result['total_karma'] = m.group(1)
+
+        # Cake day
+        m = re.search(r'(redditor for|member since).+', text, re.I)
+        if m: result['cake_day'] = m.group(0)
+
+        # Bio / description
         lines = [l.strip() for l in text.split('\n') if l.strip()]
+        for l in lines:
+            if len(l) > 20 and 'karma' not in l.lower() and 'redditor' not in l.lower():
+                result['bio'] = l[:300]
+                break
 
-        # ── Parse Reddit profile ──
-        for i, line in enumerate(lines):
-            # Username line: u/username
-            if line.startswith('u/') and username.lower() in line.lower():
-                result["display_name"] = line
+        # Mod status
+        if '[m]' in text or 'moderator' in text.lower():
+            result['is_mod'] = True
 
-            # Karma: "X post karma" "Y comment karma"
-            karma_match = re.search(r'([\d,.]+)\s*post\s*karma', line, re.IGNORECASE)
-            if karma_match:
-                result["post_karma"] = karma_match.group(1)
-            karma_match = re.search(r'([\d,.]+)\s*comment\s*karma', line, re.IGNORECASE)
-            if karma_match:
-                result["comment_karma"] = karma_match.group(1)
+        # Subreddits
+        subs = re.findall(r'/(r/\w+)', text)
+        if subs:
+            result['active_subreddits'] = list(set(subs))[:20]
 
-            # Total karma
-            karma_match = re.search(r'^([\d,.]+)\s*karma$', line, re.IGNORECASE)
-            if karma_match:
-                result["total_karma"] = karma_match.group(1)
-            
-            if 'karma' in line.lower() and not result["total_karma"]:
-                nums = re.findall(r'([\d,.]+)', line)
-                if nums:
-                    result["total_karma"] = nums[0]
-
-            # Cake day
-            if 'cake day' in line.lower():
-                result["cake_day"] = line
-
-            # Bio/description — often after the header
-            if 'About' in line and i + 1 < len(lines):
-                candidate = lines[i + 1]
-                if not candidate.startswith('u/') and 'karma' not in candidate.lower() and len(candidate) > 5:
-                    result["bio"] = candidate
-
-            # NSFW
-            if 'nsfw' in line.lower():
-                result["is_nsfw"] = True
-
-            # Moderator
-            if 'moderator' in line.lower():
-                result["is_mod"] = True
-
-        # ── Also try JSON via old.reddit (more structured) ──
-        old_data = await page.evaluate("""() => {
-            // Try to get structured data from the page
-            const scripts = document.querySelectorAll('script[type="text/javascript"], script[id*="data"]');
-            for (const s of scripts) {
-                try {
-                    const text = s.text || s.innerText;
-                    if (text.includes('user') && text.includes('karma')) {
-                        return text.slice(0, 5000);
-                    }
-                } catch(e) {}
-            }
-            return null;
-        }""")
-        if old_data:
-            result["meta"]["json_data_snippet"] = old_data[:3000]
-
-        # ── Avatar fallback ──
-        if not result["avatar_url"]:
-            avatar = await page.evaluate("""() => {
-                const img = document.querySelector('img[alt*="avatar"], img[alt*="profile"], img[class*="avatar"]');
-                return img ? img.src : null;
-            }""")
-            result["avatar_url"] = avatar
-
-        self._save_metadata(username, result, "profile")
+        self._save_metadata(username, result, 'profile')
         return result
 
     # ═══════════════════════════════════════════════════════
-    # POSTS / SUBMISSIONS
+    # POSTS
     # ═══════════════════════════════════════════════════════
 
     async def scrape_posts(self, username: str, limit: int = 15) -> list:
-        """Scrape recent submissions."""
+        """Scrape posts via old.reddit."""
         page = await self._new_page()
-        url = f"{self.base_url}/user/{username}/submitted"
-        await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(4000)
+        await page.goto(f'{self.base_url}/user/{username}/submitted', wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        await human_scroll(page, times=min(limit // 5 + 1, 3))
 
-        # Scroll
-        for i in range(min(limit // 5 + 1, 4)):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(2000)
-            print(f"  [scroll] {i+1}")
-
-        posts = await page.evaluate(f"""() => {{
-            const items = [];
-            // Reddit posts (shreddit-app or classic)
-            const containers = document.querySelectorAll('shreddit-post, div[data-testid="post-container"], div.Post, div[class*="post"]');
-            
-            containers.forEach(c => {{
-                const text = c.innerText.trim();
-                if (text.length < 10) return;
-                
-                // Title
-                const title = c.querySelector('h1, h2, h3, a[data-testid="post-title"], a[class*="title"]');
-                
-                // Subreddit
-                const sub = c.querySelector('a[href*="/r/"]');
-                
-                // Content
-                const body = c.querySelector('[data-testid="post-content"], div[class*="text-body"], div.md');
-                
-                // Images
-                const imgs = Array.from(c.querySelectorAll('img'))
-                    .map(i => i.src)
-                    .filter(s => s && !s.includes('redditstatic') && !s.includes('thumbs.redditmedia'));
-                
-                // Video
-                const video = c.querySelector('video');
-                
-                // Stats
-                const votes = c.querySelector('[data-testid="upvote-count"], div[class*="vote"], span[class*="score"]');
-                const commentCount = c.querySelector('[data-testid="comment-count"], a[class*="comments"], span[class*="comments"]');
-                
-                // Timestamp
-                const time = c.querySelector('time');
-                
-                items.push({{
-                    title: title ? title.innerText.trim().slice(0, 300) : null,
-                    subreddit: sub ? sub.innerText.trim() : null,
-                    subreddit_url: sub ? sub.href.split('?')[0] : null,
-                    text: body ? body.innerText.trim().slice(0, 2000) : text.slice(0, 500),
-                    images: imgs.slice(0, 5),
-                    has_video: !!video,
-                    votes: votes ? votes.innerText.trim() : null,
-                    comments: commentCount ? commentCount.innerText.trim() : null,
-                    timestamp: time ? (time.getAttribute('datetime') || time.innerText) : null,
-                }});
-            }});
-            
-            return items.slice(0, {limit});
-        }}""")
-
-        print(f"  → Posts found: {len(posts)}")
-        self._save_metadata(username, {"posts": posts}, "posts")
+        posts = self._parse_posts(await page.content(), limit)
+        print(f'  → Posts: {len(posts)}')
+        if posts:
+            self._save_metadata(username, {'posts': posts}, 'posts')
         return posts
 
     # ═══════════════════════════════════════════════════════
@@ -214,44 +164,16 @@ class RedditScraper(BaseScraper):
     # ═══════════════════════════════════════════════════════
 
     async def scrape_comments(self, username: str, limit: int = 20) -> list:
-        """Scrape recent comments."""
+        """Scrape comments via old.reddit."""
         page = await self._new_page()
-        url = f"{self.base_url}/user/{username}/comments"
-        await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(4000)
+        await page.goto(f'{self.base_url}/user/{username}/comments', wait_until='domcontentloaded')
+        await page.wait_for_timeout(3000)
+        await human_scroll(page, times=min(limit // 5 + 1, 3))
 
-        # Scroll
-        for i in range(min(limit // 5 + 1, 4)):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(2000)
-
-        comments = await page.evaluate(f"""() => {{
-            const items = [];
-            const containers = document.querySelectorAll('shreddit-comment, div[data-testid="comment"], div[class*="comment"], div.Entry');
-            
-            containers.forEach(c => {{
-                const text = c.innerText.trim();
-                if (text.length < 5) return;
-                
-                const sub = c.querySelector('a[href*="/r/"]');
-                const votes = c.querySelector('[data-testid="upvote-count"], span[class*="score"]');
-                const time = c.querySelector('time');
-                const parent = c.querySelector('a[href*="/comments/"]');
-                
-                items.push({{
-                    text: text.slice(0, 2000),
-                    subreddit: sub ? sub.innerText.trim() : null,
-                    votes: votes ? votes.innerText.trim() : null,
-                    timestamp: time ? (time.getAttribute('datetime') || time.innerText) : null,
-                    parent_post: parent ? parent.innerText.trim().slice(0, 200) : null,
-                }});
-            }});
-            
-            return items.slice(0, {limit});
-        }}""")
-
-        print(f"  → Comments found: {len(comments)}")
-        self._save_metadata(username, {"comments": comments}, "comments")
+        comments = self._parse_comments(await page.content(), limit)
+        print(f'  → Comments: {len(comments)}')
+        if comments:
+            self._save_metadata(username, {'comments': comments}, 'comments')
         return comments
 
     # ═══════════════════════════════════════════════════════
@@ -260,12 +182,7 @@ class RedditScraper(BaseScraper):
 
     async def scrape_photos(self, username: str, limit: int = 20) -> list:
         posts = await self.scrape_posts(username, limit)
-        photos = []
-        for p in posts:
-            photos.extend(p.get("images", []))
-        if photos:
-            self._save_metadata(username, {"photos": photos}, "photos")
-        return photos[:limit]
+        return [p.get('thumbnail') for p in posts if p.get('thumbnail')][:limit]
 
     # ═══════════════════════════════════════════════════════
     # ALL-IN-ONE
@@ -273,7 +190,7 @@ class RedditScraper(BaseScraper):
 
     async def scrape_all(self, username: str, include=None) -> dict:
         if include is None:
-            include = ["profile", "posts", "comments"]
+            include = ['profile', 'posts', 'comments']
         return await super().scrape_all(username, include)
 
     def _ts(self):

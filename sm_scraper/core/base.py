@@ -56,6 +56,7 @@ class BaseScraper(ABC):
 
         self._browser = await cloakbrowser.launch_async(
             headless=self.headless,
+            proxy=self.proxy if hasattr(self, "proxy") and self.proxy else None,
             humanize=self.humanize,
         )
         self._context = await self._browser.new_context()
